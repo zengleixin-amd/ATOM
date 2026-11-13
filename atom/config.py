@@ -2609,13 +2609,22 @@ class Config:
             if self.speculative_config is not None:
                 from aiter.jit.utils.chip_info import get_gfx
 
-                from atom.distributed.dcp_utils import dcp_persistent_supported
+                from atom.distributed.dcp_utils import (
+                    dcp_persistent_supported,
+                    mla_dcp_decode_is_persistent,
+                )
 
-                assert dcp_persistent_supported(), (
+                # The decode's own predicate: it also needs ATOM_MLA_PAGE_SIZE <= 1.
+                assert mla_dcp_decode_is_persistent(
+                    False,
+                    self.decode_context_parallel_size,
+                    dcp_persistent_supported(),
+                ), (
                     f"Speculative decode + DCP needs the persistent round-robin CP "
                     f"MLA decode (gfx950, or gfx1250 with "
-                    f"AITER_MLA_DECODE_PS1_FLYDSL=1); got {get_gfx()}. Disable DCP "
-                    f"or speculative decode on this GPU."
+                    f"AITER_MLA_DECODE_PS1_FLYDSL=1, and ATOM_MLA_PAGE_SIZE <= 1); "
+                    f"got {get_gfx()}, ATOM_MLA_PAGE_SIZE={envs.ATOM_MLA_PAGE_SIZE}. "
+                    f"Disable DCP or speculative decode."
                 )
         # DCP KV-cache interleave granularity S. S=1 (default) = token-level
         # round-robin (unchanged). S>1 = block-level interleave; must divide the

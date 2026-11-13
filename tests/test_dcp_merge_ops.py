@@ -73,10 +73,9 @@ try:
         _MLA_DCP_KERNEL_WIDTHS,
         _MLA_DCP_KERNEL_WIDTHS_NON_PERSISTENT,
         _MLA_DCP_KERNEL_WIDTHS_NON_PERSISTENT_FP8,
-        _MLA_DCP_KERNEL_WIDTHS_PS1_MULTI_TOKEN,
         _MLA_DCP_SPARSE_PREFILL_WIDTHS,
         _MLA_DCP_SPARSE_PREFILL_WIDTHS_PERSISTENT,
-        _ps1_multi_token_widths,
+        mla_dcp_decode_query_len,
         mla_dcp_kernel_num_heads,
         mla_dcp_sparse_prefill_num_heads,
     )
@@ -1288,6 +1287,7 @@ def test_sparse_prefill_builder_allocates_for_its_consumer(
         attn_prefill_chunk_size=0,
         enable_tbo=False,
         enable_tbo_decode=False,
+        speculative_config=None,
         compilation_config=SimpleNamespace(static_forward_context={}),
     )
     runner = SimpleNamespace(
@@ -1935,47 +1935,77 @@ def test_decode_width_comes_from_the_matching_table(num_heads, dcp, dtype):
 
 
 @needs_dcp_ops
-@pytest.mark.parametrize("max_seqlen_q", [2, 5, 9])
-@pytest.mark.parametrize("num_heads, dcp", HEAD_WIDTH_SHAPES)
-@pytest.mark.parametrize("dtype", ["bf16", "fp8"])
-def test_gfx1250_multi_token_decode_pads_to_a_ps1_width(
-    num_heads, dcp, dtype, max_seqlen_q, monkeypatch
-):
-    """gfx1250 takes a multi-token persistent decode only at the PS1 widths the
-    installed aiter reports for that query length (16 and 96 always); the
-    gathered width is padded up to one of them, never left on one aiter would
-    abort on."""
+def test_dcp_decode_query_len_is_the_verify_pass():
+    """The drafted tokens plus the one they follow; one without speculation."""
+    spec = SimpleNamespace(num_speculative_tokens=7)
+    assert mla_dcp_decode_query_len(SimpleNamespace(speculative_config=spec)) == 8
+    assert mla_dcp_decode_query_len(SimpleNamespace(speculative_config=None)) == 1
+
+
+def _ask_aiter(monkeypatch, answer):
+    """Route gfx1250's multi-token width through a stand-in for aiter's helper."""
+    import aiter.ops.attention as aiter_attention
+
+    calls = []
+
+    def get_mla_decode_num_heads(*args, **kwargs):
+        calls.append((args, kwargs))
+        return answer
+
     monkeypatch.setattr(attention_mla_module, "get_gfx", lambda: "gfx1250")
-    gathered = max(num_heads * dcp, HEAD_WIDTH_MIN)
-    widths = _ps1_multi_token_widths(max_seqlen_q, dtype)
-    assert set(_MLA_DCP_KERNEL_WIDTHS_PS1_MULTI_TOKEN) <= set(widths)
-    w = mla_dcp_kernel_num_heads(
-        num_heads,
-        dcp,
-        HEAD_WIDTH_MIN,
-        kv_cache_dtype=dtype,
-        persistent=True,
-        multi_token=True,
-        max_seqlen_q=max_seqlen_q,
+    monkeypatch.setattr(
+        aiter_attention,
+        "get_mla_decode_num_heads",
+        get_mla_decode_num_heads,
+        raising=False,
     )
-    if gathered <= widths[-1]:  # past the table it falls back and warns
-        assert w in widths, f"{num_heads}x{dcp} q={max_seqlen_q}: {w} not in {widths}"
-        assert w >= gathered, "width must cover the gathered heads"
+    return calls
 
 
 @needs_dcp_ops
-def test_ps1_multi_token_widths_without_the_shape_query(monkeypatch):
-    """An aiter that cannot report shape support keeps the base PS1 widths."""
+@pytest.mark.parametrize("dtype", ["bf16", "fp8"])
+def test_gfx1250_multi_token_decode_takes_aiters_width(monkeypatch, dtype):
+    """A gfx1250 persistent decode of more than one row pads to the head count
+    aiter names for the call it makes: round-robin KV shards over the DCP group,
+    LSE for the merge. A single-row decode keeps the persistent table."""
+    calls = _ask_aiter(monkeypatch, 32)
+
+    def width(max_seqlen_q):
+        return mla_dcp_kernel_num_heads(
+            8, 2, 16, kv_cache_dtype=dtype, persistent=True, max_seqlen_q=max_seqlen_q
+        )
+
+    assert width(max_seqlen_q=5) == 32
+    kv = dtypes.fp8 if dtype == "fp8" else torch.bfloat16
+    assert calls == [
+        (
+            (16, 5, kv, kv),
+            {"return_lse": True, "cp_world_size": 2, "cp_round_robin": True},
+        )
+    ]
+    assert width(max_seqlen_q=1) == 16
+    assert len(calls) == 1, "a single-row decode does not ask"
+
+
+@needs_dcp_ops
+def test_gfx1250_multi_token_decode_without_a_kernel_refuses(monkeypatch):
+    _ask_aiter(monkeypatch, None)
+    with pytest.raises(ValueError, match="16 gathered query heads x 9 rows"):
+        mla_dcp_kernel_num_heads(
+            8, 2, 16, kv_cache_dtype="fp8", persistent=True, max_seqlen_q=9
+        )
+
+
+@needs_dcp_ops
+def test_gfx1250_multi_token_decode_needs_aiters_helper(monkeypatch):
     import aiter.ops.attention as aiter_attention
 
-    monkeypatch.delattr(aiter_attention, "get_mla_decode_shape_support")
-    _ps1_multi_token_widths.cache_clear()
-    try:
-        assert (
-            _ps1_multi_token_widths(5, "fp8") == _MLA_DCP_KERNEL_WIDTHS_PS1_MULTI_TOKEN
+    monkeypatch.setattr(attention_mla_module, "get_gfx", lambda: "gfx1250")
+    monkeypatch.delattr(aiter_attention, "get_mla_decode_num_heads", raising=False)
+    with pytest.raises(RuntimeError, match="ROCm/aiter#7913"):
+        mla_dcp_kernel_num_heads(
+            8, 2, 16, kv_cache_dtype="fp8", persistent=True, max_seqlen_q=5
         )
-    finally:
-        _ps1_multi_token_widths.cache_clear()
 
 
 @needs_dcp_ops

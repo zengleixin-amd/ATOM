@@ -156,6 +156,7 @@ def mla_builder_cls():
             _MLA_MIN_HEADS=16,
             _MLA_SPLIT_BUDGET_AUTO=-1,
             MLAAttention=type("MLAAttention", (), {}),
+            mla_dcp_decode_query_len=noop,
             mla_dcp_kernel_num_heads=noop,
             mla_dcp_sparse_prefill_num_heads=noop,
             mla_kernel_num_heads=lambda heads: max(16, -(-heads // 16) * 16),

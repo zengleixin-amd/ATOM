@@ -48,6 +48,7 @@ from atom.model_ops.attention_mla import (
     _MLA_MIN_HEADS,
     _MLA_SPLIT_BUDGET_AUTO,
     MLAAttention,
+    mla_dcp_decode_query_len,
     mla_dcp_kernel_num_heads,
     mla_dcp_sparse_prefill_num_heads,
     mla_kernel_num_heads,
@@ -594,7 +595,7 @@ class AiterMLAMetadataBuilder(CommonAttentionBuilder):
                     dcp_persistent,
                     sparse_metadata_rebuild=self.sparse_dcp_metadata_rebuild,
                 ),
-                multi_token=getattr(model_runner, "num_spec_tokens", 0) > 0,
+                max_seqlen_q=mla_dcp_decode_query_len(config),
             )
         else:
             self.persistent_num_heads = self.padded_num_attention_heads

@@ -19,6 +19,7 @@ from atom.config import get_current_atom_config
 from atom.distributed.dcp_utils import dcp_persistent_supported
 from atom.model_ops.attention_mla import (
     _MLA_MIN_HEADS,
+    mla_dcp_decode_query_len,
     mla_dcp_kernel_num_heads,
     mla_kernel_num_heads,
 )
@@ -1390,6 +1391,7 @@ class AiterMlaMetadataBuilderForVllm(MLACommonMetadataBuilder):
                 # build()), so the width they must describe is the persistent
                 # one whatever the step later decides.
                 persistent=True,
+                max_seqlen_q=mla_dcp_decode_query_len(get_current_atom_config()),
             )
         else:
             self.persistent_num_heads = self.padded_num_attention_heads
