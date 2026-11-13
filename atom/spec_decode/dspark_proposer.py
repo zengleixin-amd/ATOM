@@ -729,6 +729,9 @@ class DSparkProposer(Drafter):
         # One block when every tap was relayed from earlier PP stages.
         if len(aux_hidden_states) == 1:
             main_hidden_all = aux_hidden_states[0][:num_rows]
+        elif getattr(self.model, "context_takes_taps", False):
+            # The model concatenates (a layer plugin may fuse it away).
+            main_hidden_all = [h[:num_rows] for h in aux_hidden_states]
         else:
             main_hidden_all = torch.cat(
                 [h[:num_rows] for h in aux_hidden_states], dim=-1
@@ -752,9 +755,7 @@ class DSparkProposer(Drafter):
             slot_mapping = forward_context.attn_metadata.slot_mapping
             if slot_mapping is not None:
                 slot_mapping = slot_mapping[:num_rows]
-        with record_function(
-            f"draft_kv[bs={scheduled_bs} tok={main_hidden_all.shape[0]}]"
-        ):
+        with record_function(f"draft_kv[bs={scheduled_bs} tok={num_rows}]"):
             self.model.write_context_kv(main_hidden_all, positions, slot_mapping)
 
     def _propose(

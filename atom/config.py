@@ -2213,6 +2213,9 @@ class Config:
 
     # only use for plugin mode
     plugin_config: PluginConfig | None = None
+    # --plugin-enable: the layer plugins (atom/plugin_host.py) and AITER
+    # providers this process may route to, in preference order. Empty: none.
+    plugin_enable: tuple[str, ...] = ()
     # only for quark_online_quantization
     online_quant_config: dict | None = None
     hf_overrides: dict[str, Any] | None = None
@@ -3353,6 +3356,10 @@ class Config:
         factors.append(
             None if spec is None else (spec.method, spec.num_speculative_tokens)
         )
+        # The enable list reaches AITER-routed ops inside the graph (host sites
+        # stay native while traced). Absent when empty: existing keys hold.
+        if getattr(self, "plugin_enable", ()):
+            factors.append((tuple(self.plugin_enable), envs.ATOM_PLUGIN_HOST))
 
         hash_str = hashlib.md5(
             str(factors).encode(), usedforsecurity=False

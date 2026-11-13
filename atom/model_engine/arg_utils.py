@@ -185,6 +185,7 @@ class EngineArgs:
     online_quant_config: dict | None = None
     hf_overrides: dict | None = None
     dspark_config: dict | None = None
+    plugin_enable: str | None = None
 
     eplb_enable: bool = False
     eplb_config: dict | None = None
@@ -815,6 +816,15 @@ class EngineArgs:
                 """"ragged_graph_sizes": "8"}'"""
             ),
         )
+        parser.add_argument(
+            "--plugin-enable",
+            type=str,
+            default=None,
+            help="Comma-separated plugins to enable, in preference order: "
+            "layer plugins (entry points 'atom.layer_plugins') and AITER "
+            "providers (aiter.plugin). Default: none. ATOM_PLUGIN_HOST=0 "
+            "disables them all.",
+        )
         dcp_group = parser.add_argument_group("DCP options")
         dcp_group.add_argument(
             "--dcp-config",
@@ -970,6 +980,8 @@ class EngineArgs:
         # --dspark-config (JSON dict) → DSparkConfig object, passed through as
         # Config.dspark (no env vars).
         kwargs["dspark"] = DSparkConfig.from_dict(kwargs.pop("dspark_config", None))
+        names = (kwargs.pop("plugin_enable") or "").split(",")
+        kwargs["plugin_enable"] = tuple(n.strip() for n in names if n.strip())
         # --eplb-config (JSON dict) → EPLBConfig object (--eplb-enable
         # is the master switch, --eplb-config only tunes it).
         kwargs["eplb_config"] = EPLBConfig.from_dict(kwargs.pop("eplb_config"))

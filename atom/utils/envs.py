@@ -648,6 +648,13 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # periods and the noise floor under them are in the environment doc, and
     # end-to-end throughput is too coarse to see an effect that size.
     "ATOM_DSV41_SIDE_STREAMS": lambda: int(os.getenv("ATOM_DSV41_SIDE_STREAMS", "0")),
+    # Layer plugin host kill switch (atom/plugin_host.py): "0" serves every
+    # site natively and passes AITER an empty enable list. It cannot enable a
+    # plugin; only --plugin-enable does.
+    "ATOM_PLUGIN_HOST": lambda: os.getenv("ATOM_PLUGIN_HOST", "1") != "0",
+    # "1": ask every owner of a site and raise when two accept one call (their
+    # cells overlap). Off by default; like the switch above it enables nothing.
+    "ATOM_PLUGIN_HOST_STRICT": lambda: os.getenv("ATOM_PLUGIN_HOST_STRICT", "0") == "1",
     # DeepSeek-V4.1 mono decode's high-interactivity (hi) monokernels (the
     # `mono/hi` package, imported only with this on): on the decode steps it
     # serves, every decoder layer, the verify head, the DSpark draft and the

@@ -51,6 +51,7 @@ from aiter.ops.triton.fusions.fused_clamp_act_mul import (
 from aiter.ops.triton.gemm.batched.batched_gemm_bf16 import batched_gemm_bf16
 from torch import nn
 
+from atom import plugin_host
 from atom.config import (
     Config,
     LayerQuantConfig,
@@ -2775,6 +2776,11 @@ class Expert(nn.Module):
         self.use_fused_clamp_act_mul = shared_expert_fused_act_enabled(
             self.w2.input_size
         )
+        # act..down as the traced forward runs it: inline, or one opaque op
+        # when a layer plugin serves it (decided here, at build).
+        self.act_down = plugin_host.span_op(
+            "moe.shared.act..down", prefix, self._act_down, self._act_down_fake
+        )
 
     def forward(
         self,
@@ -2782,25 +2788,45 @@ class Expert(nn.Module):
         weights: torch.Tensor | None = None,  # [num_tokens, 1]  optional gate
     ) -> torch.Tensor:  # [num_tokens, dim]
 
-        dtype = x.dtype
         # Single fused GEMM. Layout is [gate | up] concat on last dim — matches
         # aiter silu_and_mul's split([d, d], dim=-1) contract. The kernel does
         # silu/clamp/mul in fp32 internally regardless of input dtype, so we
         # feed the bf16 GEMM output directly.
         combined = self.gate_up_proj(x)  # [num_tokens, 2*inter_dim_per_tp]
+        return self.act_down(combined, weights)
+
+    def _act_down_fake(self, combined, weights):
+        return combined.new_empty(
+            (combined.shape[0], self.w2.output_size), dtype=dtypes.bf16
+        )
+
+    def _act_down(self, combined, weights):
+        act, act_scale = plugin_host.call(
+            "moe.shared.act..down",
+            self._act,
+            combined,
+            weights,
+            swiglu_limit=self.swiglu_limit,
+            group_rows=self.w2.native_a8_group_rows,
+        )
+        return self.w2(act, x_scale=act_scale)  # [num_tokens, dim]
+
+    def _act(self, combined, weights, *, swiglu_limit, group_rows):
+        """w2's input: the quantized pair when fused, else bf16 with no scale."""
+        dtype = combined.dtype
         if self.use_fused_clamp_act_mul:
-            native_mx = self.w2.native_a8_group_rows is not None
+            native_mx = group_rows is not None
             x_fp8, x_scale = fused_clamp_act_mul(
                 combined,
-                swiglu_limit=self.swiglu_limit,
+                swiglu_limit=swiglu_limit,
                 activation="silu",
                 weights=weights,
                 dtype_quant=dtypes.fp8,
-                **fused_scale_kwargs(self.w2.native_a8_group_rows),
+                **fused_scale_kwargs(group_rows),
             )
             if native_mx:
                 x_scale = x_scale.view(torch.float8_e8m0fnu)
-            return self.w2(x_fp8, x_scale=x_scale)
+            return x_fp8, x_scale
         out = torch.empty(
             (combined.shape[0], combined.shape[-1] // 2),
             dtype=dtype,
@@ -2808,10 +2834,10 @@ class Expert(nn.Module):
         )
         # limit > 0 enables in-kernel clamp (gate≤limit, up∈[-limit,limit]) via
         # ROCm v_med3_f32 — same semantics as the prior torch.clamp pair.
-        aiter_silu_and_mul(out, combined, self.swiglu_limit)
+        aiter_silu_and_mul(out, combined, swiglu_limit)
         if weights is not None:
             out = weights.to(dtype) * out
-        return self.w2(out)  # [num_tokens, dim]
+        return out, None
 
 
 class MoE(nn.Module):
